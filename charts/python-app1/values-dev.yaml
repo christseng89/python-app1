@@ -1,15 +1,12 @@
 replicaCount: 1
-
 image:
-  tag: ""
-
+  tag: "1787df"
 ingress:
   hosts:
     - host: python-app1-dev.test.com
       paths:
         - path: /
           pathType: Prefix
-
 resources:
   requests:
     cpu: 40m
