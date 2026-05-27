@@ -1,0 +1,69 @@
+commonLabels:
+  backstage.io/kubernetes-id: python-app1
+replicaCount: 1
+image:
+  repository: christseng89/python-app1
+  pullPolicy: IfNotPresent
+  # Placeholder — overridden by values-dev/staging/prod.yaml in the GitOps flow.
+  # If you `helm install` directly, override with --set image.tag=<sha>.
+  tag: v2
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+podAnnotations: {}
+podLabels: {}
+serviceAccount:
+  create: false
+  automount: true
+  annotations: {}
+  name: ""
+podSecurityContext: {}
+securityContext: {}
+service:
+  type: ClusterIP
+  port: 5000
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: python-app1-dev.test.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+resources:
+  requests:
+    cpu: 50m
+    memory: 50M
+  limits:
+    cpu: 200m
+    memory: 200M
+livenessProbe:
+  httpGet:
+    path: /api/v1/healthz
+    port: http
+readinessProbe:
+  httpGet:
+    path: /api/v1/healthz
+    port: http
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+volumes: []
+volumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Runner integration — used by templates/runner-rolebinding.yaml.
+# The chart creates a per-env RoleBinding so the shared ARC runner (running in
+# `runner.namespace` under `runner.serviceAccountName`) can read pods, events,
+# logs, deployments, and replicasets in this env's namespace.
+# Set `runner.enabled: false` if you don't use the bundled ARC runner.
+runner:
+  enabled: true
+  namespace: github-runners
+  serviceAccountName: python-app1-self-hosted-runner

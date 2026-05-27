@@ -1,0 +1,19 @@
+replicaCount: 2
+
+image:
+  tag: ""
+
+ingress:
+  hosts:
+    - host: python-app1-staging.test.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 50M
+  limits:
+    cpu: 250m
+    memory: 200M

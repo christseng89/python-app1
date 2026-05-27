@@ -1,0 +1,29 @@
+{{- if .Values.runner.enabled -}}
+# Per-env RoleBinding that lets the shared ARC runner pod (running in
+# `github-runners`) execute `kubectl get pods/events/logs/...` against
+# THIS env's namespace ({{ .Release.Namespace }}).
+#
+# Created and managed by ArgoCD as part of each env's Helm sync, so it
+# automatically lives in:
+#   <app>-dev      (when cicd.yaml creates the dev ArgoCD app)
+#   <app>-staging  (when staging-cd.yaml creates the staging ArgoCD app)
+#   <app>-prod     (when prod-cd.yaml creates the prod ArgoCD app)
+#
+# Binds to the cluster-scoped ClusterRole `arc-runner-reader` (defined in
+# k8s/runner-rbac.yaml, installed once by setup.sh).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arc-runner-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "python-app1.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.runner.serviceAccountName }}
+    namespace: {{ .Values.runner.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: arc-runner-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end -}}

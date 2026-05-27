@@ -1,0 +1,19 @@
+replicaCount: 1
+
+image:
+  tag: ""
+
+ingress:
+  hosts:
+    - host: python-app1-dev.test.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 40m
+    memory: 40M
+  limits:
+    cpu: 200m
+    memory: 160M

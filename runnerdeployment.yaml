@@ -1,0 +1,24 @@
+# Per-app RunnerDeployment.
+#
+# Lives in the shared `github-runners` namespace alongside every other
+# repo's runner. Uses its own ServiceAccount (created in k8s/runner-rbac.yaml)
+# so its kubectl permissions are scoped only to this app's three env
+# namespaces (via RoleBindings shipped in the Helm chart).
+#
+# Pre-req: `kubectl apply -f k8s/runner-rbac.yaml` must run first to create
+# the namespace and ServiceAccount. `setup.sh` does this for you.
+
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: python-app1-self-hosted-runner
+  namespace: github-runners
+spec:
+  replicas: 1
+  template:
+    spec:
+      repository: christseng89/python-app1
+      dockerEnabled: true
+      # Binds the runner pod to its per-app SA so kubectl inside the pod
+      # uses the per-env RoleBindings created by the Helm chart.
+      serviceAccountName: python-app1-self-hosted-runner

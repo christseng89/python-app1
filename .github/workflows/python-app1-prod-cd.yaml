@@ -1,0 +1,219 @@
+name: python-app1-prod-cd
+
+# Promotes the production environment.
+# Trigger: a push that changes charts/python-app1/values-prod.yaml
+# on main (i.e. the user manually edited image.tag in that file and committed).
+# workflow_dispatch is also supported for a no-change re-sync.
+on:
+  push:
+    paths:
+      - charts/python-app1/values-prod.yaml
+    branches:
+      - main
+  workflow_dispatch:
+
+# Serialize prod runs so two quick commits don't race against the same
+# ArgoCD app. Prod runs in parallel with staging (different group key).
+concurrency:
+  group: prod-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+# Read-only — no commit back needed; values-prod.yaml is updated by the user.
+permissions:
+  contents: read
+
+env:
+  ARGOCD_VERSION: ${{ vars.ARGOCD_VERSION }}
+  KUBECTL_VERSION: ${{ vars.KUBECTL_VERSION }}
+  ARGOCD_SERVER: argocd-server.argocd.svc.cluster.local
+  ARGOCD_CHART_PATH: charts/python-app1
+  # Hardcoded — this file is prod-only. See python-app1-staging-cd.yaml
+  # for the staging equivalent.
+  DEPLOY_ENV: prod
+  ARGOCD_APP: python-app1-prod
+  DEST_NAMESPACE: python-app1-prod
+  VALUES_FILE: charts/python-app1/values-prod.yaml
+
+jobs:
+  cd:
+    if: "!contains(github.event.head_commit.message || '', 'init commit')"
+    runs-on: [self-hosted, linux]
+    # First successful run takes ~5-10 min to download argocd CLI on a cold
+    # cache. Once actions/cache has saved the binary, subsequent runs drop
+    # back under 2 min — at that point you can safely lower this to 10.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate image tag
+        id: validate
+        shell: bash
+        run: |
+          TAG=$(awk '/^image:/{found=1} found && /tag:/{print $2; exit}' \
+            "${{ env.VALUES_FILE }}" | tr -d '"')
+          if [ -z "$TAG" ]; then
+            echo "::notice::image.tag is empty in ${{ env.VALUES_FILE }} — skipping deployment."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Deploying image tag: ${TAG}"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect runner architecture
+        id: arch
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          case "$(uname -m)" in
+            x86_64)  echo "tag=amd64" >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo "tag=arm64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unsupported arch $(uname -m)"; exit 1 ;;
+          esac
+
+      # Cache kubectl across runs. Key includes version + arch so a bump
+      # automatically invalidates the cache and re-downloads from the mirror.
+      - name: Cache kubectl binary
+        if: steps.validate.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kubectl
+          key: kubectl-${{ steps.arch.outputs.tag }}-${{ env.KUBECTL_VERSION }}
+
+      - name: Install kubectl
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="christseng89/kubectl-bin:${{ env.KUBECTL_VERSION }}"
+          PLATFORM="linux/${{ steps.arch.outputs.tag }}"
+
+          if [ ! -x /tmp/kubectl ]; then
+            echo "Cache miss — pulling kubectl ${{ env.KUBECTL_VERSION }} from Docker Hub mirror..."
+            for i in 1 2 3; do
+              if time docker pull --platform "$PLATFORM" "$IMG"; then break; fi
+              echo "Attempt $i failed; retrying in ${i}0s..."
+              sleep "${i}0"
+            done
+            cid=$(docker create --platform "$PLATFORM" "$IMG" /kubectl)
+            docker cp "$cid:/kubectl" /tmp/kubectl
+            docker rm "$cid" >/dev/null
+            chmod +x /tmp/kubectl
+          else
+            echo "Cache hit — using cached kubectl at /tmp/kubectl"
+          fi
+          sudo cp /tmp/kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      # Cache argocd CLI across runs. v3.x is ~150 MB — without this the step
+      # takes 30-60s on every CD; cached restore is <1s.
+      - name: Cache argocd CLI
+        if: steps.validate.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/argocd
+          key: argocd-${{ steps.arch.outputs.tag }}-${{ env.ARGOCD_VERSION }}
+
+      - name: Install ArgoCD CLI
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="christseng89/argocd-bin:${{ env.ARGOCD_VERSION }}"
+          PLATFORM="linux/${{ steps.arch.outputs.tag }}"
+
+          if [ ! -x /tmp/argocd ]; then
+            echo "Cache miss — pulling argocd ${{ env.ARGOCD_VERSION }} from Docker Hub mirror..."
+            for i in 1 2 3; do
+              if time docker pull --platform "$PLATFORM" "$IMG"; then break; fi
+              echo "Attempt $i failed; retrying in ${i}0s..."
+              sleep "${i}0"
+            done
+            # FROM scratch images have no default CMD — pass /argocd as a dummy arg.
+            cid=$(docker create --platform "$PLATFORM" "$IMG" /argocd)
+            docker cp "$cid:/argocd" /tmp/argocd
+            docker rm "$cid" >/dev/null
+            chmod +x /tmp/argocd
+          else
+            echo "Cache hit — using cached argocd at /tmp/argocd"
+          fi
+          /tmp/argocd version --client
+
+      - name: ArgoCD login
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --plaintext: argocd-server has `server.insecure: true`, so the
+          # service answers plain HTTP. Without this flag the CLI hits an interactive
+          # prompt and fatals with EOF (exit 20) in a non-interactive shell.
+          /tmp/argocd login ${{ env.ARGOCD_SERVER }} \
+            --plaintext \
+            --grpc-web \
+            --username admin \
+            --password "${{ secrets.ARGOCD_PASSWORD }}"
+
+      - name: Register GitHub repo in ArgoCD
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --upsert: safe to call on every run — updates credentials if they
+          # already exist, registers them from scratch after a cluster rebuild.
+          /tmp/argocd repo add ${{ github.server_url }}/${{ github.repository }}.git \
+            --username x-access-token \
+            --password "${{ secrets.GH_PAT }}" \
+            --upsert
+
+      - name: Create ArgoCD app if absent
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if /tmp/argocd app get "$ARGOCD_APP" > /dev/null 2>&1; then
+            echo "App '$ARGOCD_APP' already exists — skipping create."
+          else
+            echo "App '$ARGOCD_APP' not found — creating..."
+            # --validate=false: skip server-side Helm rendering during creation.
+            /tmp/argocd app create "$ARGOCD_APP" \
+              --project default \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --sync-option CreateNamespace=true \
+              --repo ${{ github.server_url }}/${{ github.repository }}.git \
+              --revision main \
+              --path ${{ env.ARGOCD_CHART_PATH }} \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace "$DEST_NAMESPACE" \
+              --values "values-${DEPLOY_ENV}.yaml" \
+              --validate=false
+            echo "App '$ARGOCD_APP' created successfully."
+          fi
+
+      - name: ArgoCD app sync
+        if: steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/argocd app sync "$ARGOCD_APP"
+          /tmp/argocd app wait "$ARGOCD_APP" --health --timeout 180
+
+      # Runs only when one of the steps above failed.
+      - name: Diagnose on failure
+        if: failure() && steps.validate.outputs.skip != 'true'
+        shell: bash
+        run: |
+          echo "=== argocd app get ==="
+          /tmp/argocd app get "$ARGOCD_APP" || true
+          echo "=== argocd app history ==="
+          /tmp/argocd app history "$ARGOCD_APP" --output wide || true
+          echo "=== pods in ${DEST_NAMESPACE} ns ==="
+          kubectl get pods -n "$DEST_NAMESPACE" -o wide || true
+          echo "=== recent events (last 30, by lastTimestamp) ==="
+          kubectl get events -n "$DEST_NAMESPACE" --sort-by=.lastTimestamp 2>/dev/null | tail -30 || true
+          echo "=== replicasets ==="
+          kubectl get rs -n "$DEST_NAMESPACE" -o wide || true
+          echo "=== deploy describe ==="
+          kubectl describe deploy python-app1 -n "$DEST_NAMESPACE" || true
+          echo "=== recent pod logs ==="
+          kubectl logs -n "$DEST_NAMESPACE" -l app.kubernetes.io/name=python-app1 --tail=200 --all-containers || true

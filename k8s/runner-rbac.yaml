@@ -1,0 +1,48 @@
+# Shared runner infrastructure - applied by setup.sh.
+#
+# This file is INTENTIONALLY idempotent: every resource here is shared
+# across all apps that use this template. Running setup.sh for a second
+# app re-applies the namespace and ClusterRole as no-ops; only the per-app
+# ServiceAccount below is unique per repo.
+#
+# Layout:
+#   Namespace        github-runners                  (shared, once per cluster)
+#   ClusterRole      arc-runner-reader               (shared, once per cluster)
+#   ServiceAccount   <app_name>-self-hosted-runner   (per app)
+#
+# The matching RoleBinding (per env namespace) lives inside the Helm chart
+# at charts/<app_name>/templates/runner-rolebinding.yaml - ArgoCD applies
+# it as part of each env's sync.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: github-runners
+  labels:
+    purpose: ci-runners
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # Per-app SA so python-app1's runner cannot read python-app2's app pods
+  # even though both runners share the github-runners namespace.
+  name: python-app1-self-hosted-runner
+  namespace: github-runners
+---
+# Cluster-wide read-only role re-used by every app's per-env RoleBinding.
+# Covers exactly what the workflows' Diagnose-on-failure steps need:
+#   pods + pods/log           - pod state and container logs
+#   events                    - image pull / probe / OOM failures (most common)
+#   deployments + replicasets - rollout progress, new-vs-old version state
+# Does NOT include configmaps, secrets, services, or any write verb.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arc-runner-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]

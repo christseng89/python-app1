@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-app1
+  labels:
+    app: python-app1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-app1
+  template:
+    metadata:
+      labels:
+        app: python-app1
+    spec:
+      containers:
+        - name: python-app1
+          # Smoke-test placeholder. Production deploys go via Helm chart + ArgoCD
+          # (charts/python-app1/), which uses the short commit SHA tag
+          # rewritten by CI. To use these raw manifests directly, build & push
+          # an image first, then `sed -i "s|:CHANGE_ME|:<your-tag>|" k8s/deploy.yaml`.
+          image: christseng89/python-app1:v2
+          ports:
+            - containerPort: 5000
