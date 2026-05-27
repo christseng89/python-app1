@@ -1,7 +1,7 @@
 replicaCount: 3
 
 image:
-  tag: "df4f26"
+  tag: "1787df"
 
 ingress:
   hosts:
